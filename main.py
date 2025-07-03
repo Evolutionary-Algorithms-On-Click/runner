@@ -38,7 +38,8 @@ def parse_json_string(json_string):
 
 def download_file(run_id, file_name, extension):
     """Downloads a file from MinIO storage."""
-    BUCKET_NAME = "code"
+    BUCKET_NAME = os.getenv("MINIO_BUCKET", "code")
+
     try:
         minio_client = Minio(
             MINIO_URL,
@@ -62,7 +63,8 @@ def download_file(run_id, file_name, extension):
 
 def upload_file(run_id, file_path):
     """Uploads a file to MinIO storage."""
-    BUCKET_NAME = "code"
+    BUCKET_NAME = os.getenv("MINIO_BUCKET", "code")
+
     try:
         minio_client = Minio(
             MINIO_URL,
@@ -117,7 +119,8 @@ def redis_stream_adder(redis_url, log_queue, run_id):
     max_attempts = 5
     retry_delay = 2
     stream_name = run_id  # Use run_id as the stream name
-    srream_ttl_seconds = 120
+    stream_ttl_seconds = 120  #Typo :corrected from srream_ttl_seconds to  stream_ttl_seconds
+
 
     # Redis Connection Loop.
     while connection_attempts < max_attempts:
@@ -187,7 +190,7 @@ def redis_stream_adder(redis_url, log_queue, run_id):
                         payload = {LOG_DATA_FIELD: log_entry}
                         # print(f"DEBUG: XADD to stream='{stream_name}' payload='{payload}'") # Debug.
                         entry_id = r.xadd(stream_name, payload)
-                        r.expire(stream_name, srream_ttl_seconds)
+                        r.expire(stream_name, stream_ttl_seconds)#Typo :corrected from srream_ttl_seconds to  stream_ttl_seconds
                         entries_added += 1
                         # print(f"Added to Redis Stream '{stream_name}', ID: {entry_id.decode()}") # Debug.
                     else:
@@ -207,10 +210,9 @@ def redis_stream_adder(redis_url, log_queue, run_id):
             eof_payload = {LOG_DATA_FIELD: eof_message}
             try:
                 entry_id = r.xadd(stream_name, eof_payload)
-                r.expire(stream_name, srream_ttl_seconds)
-                print(
-                    f"Added EOF marker to Redis Stream '{stream_name}', ID: {entry_id.decode()}"
-                )
+                r.expire(stream_name, stream_ttl_seconds)#Typo :corrected from srream_ttl_seconds to  stream_ttl_seconds
+                print(f"... ID: {entry_id.decode() if isinstance(entry_id, bytes) else entry_id}")  #Redis entry_id.decode() May Break
+                
                 entries_added += 1
             except redis.exceptions.RedisError as e:
                 print(f"Error adding EOF marker to Redis Stream: {e}")
@@ -306,14 +308,14 @@ def process_message(ch, method, properties, body):
             command = ["python", local_file_path]
         else:
             command = ["python", "-m", "scoop", local_file_path]
-        timeout_sec = 3600
+        timeout_sec = int(os.getenv("SUBPROCESS_TIMEOUT", "3600"))#changed the hardcoded constants
         print(f"Running command: {' '.join(command)} in {file_parent_dir}")
         print(f"Timeout: {timeout_sec} seconds")
 
         # Acknowledge message BEFORE starting the potentially long subprocess.
         print("Acknowledging RabbitMQ message before starting subprocess.")
         ch.basic_ack(delivery_tag=method.delivery_tag)
-
+        
         process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
@@ -467,9 +469,21 @@ def process_message(ch, method, properties, body):
         if redis_adder_thread and redis_adder_thread.is_alive():
             redis_adder_thread.join(timeout=1)
 
+        if local_file_path and os.path.exists(os.path.dirname(local_file_path)):
+            import shutil
+            shutil.rmtree(os.path.dirname(local_file_path), ignore_errors=True)
+            print(f"Cleaned up files for run {runId}")
+
         print(f"Finished processing run {runId}. Final status: {run_status}")
         print("-" * 20)
-        # TODO: Clean up local files.
+
+
+        '''fix: clean up temporary run files after execution
+
+Added missing cleanup logic to remove temporary code directories created during task execution. This prevents disk space issues from leftover files.
+
+Also fixed typo in Redis stream TTL variable name (`srream_ttl_seconds` → `stream_ttl_seconds`) to avoid runtime NameError.
+'''
 
 
 # Main RabbitMQ Connection and Consumption

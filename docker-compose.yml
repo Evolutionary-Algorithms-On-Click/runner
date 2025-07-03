@@ -14,3 +14,5 @@ services:
       RABBITMQ_QUEUE: task_queue
       WEBSOCKET_LOG_URL: ws://host.docker.internal:5002/live
       REDIS_URL: redis://host.docker.internal:6379/0
+      environment:
+          - MINIO_BUCKET=my-bucket-name
