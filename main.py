@@ -1,5 +1,4 @@
 import os
-import pika
 import subprocess
 import json
 from minio import Minio
@@ -8,11 +7,11 @@ import psycopg2
 import threading
 import queue
 import redis
+import traceback
 import time
 
 # Read environment variables.
-RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://user:password@localhost:5672/")
-QUEUE_NAME = os.getenv("RABBITMQ_QUEUE", "task_queue")
+QUEUE_NAME = os.getenv("REDIS_QUEUE_NAME", "task_queue")
 MINIO_URL = os.getenv("MINIO_URL", "localhost:9000")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
@@ -20,11 +19,12 @@ COCKROACHDB_URL = os.getenv(
     "COCKROACHDB_URL", "postgresql://root@localhost:26257/defaultdb?sslmode=disable"
 )
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-
-
+MESSAGE_RETRY_DELAY = 10
 STREAM_END = object()
 LOG_DATA_FIELD = b"log_data"
 
+redis_connection = None
+stop_flag = threading.Event()
 
 def parse_json_string(json_string):
     """Parses a JSON string and returns a Python object."""
@@ -230,20 +230,20 @@ def redis_stream_adder(redis_url, log_queue, run_id):
 
 
 # Callback function that is called when a message is received.
-def process_message(ch, method, properties, body):
-    """Callback function when a message is received from RabbitMQ"""
-    msg = body.decode()
+def process_message(body):
+    """Callback function when a message is received from Redis List"""
+    msg = body.strip()
     print(f"Received Message: {msg}")
     data = parse_json_string(msg)
     if data is None:
-        ch.basic_ack(delivery_tag=method.delivery_tag)
+        print("Skipping. Invalid JSON message...")
         return
 
     runId = data.get("runId")
     fileName = data.get("fileName")
     extension = data.get("extension")
     if not all([runId, fileName, extension]):
-        ch.basic_ack(delivery_tag=method.delivery_tag)
+        print("Skipping. Missing required fields in message...")
         return
 
     redis_adder_thread = None
@@ -293,7 +293,10 @@ def process_message(ch, method, properties, body):
         except psycopg2.Error as e:
             print(f"Error updating run status/fetching type in CockroachDB: {e}")
             run_status = "failed"
-            raise
+            print(f"Requeuing message for run {runId}...")
+            redis_connection.lpush(QUEUE_NAME, msg) # Requeue message
+            time.sleep(MESSAGE_RETRY_DELAY)
+            return
         finally:
             if conn:
                 if "cur" in locals() and cur:
@@ -309,10 +312,6 @@ def process_message(ch, method, properties, body):
         timeout_sec = 3600
         print(f"Running command: {' '.join(command)} in {file_parent_dir}")
         print(f"Timeout: {timeout_sec} seconds")
-
-        # Acknowledge message BEFORE starting the potentially long subprocess.
-        print("Acknowledging RabbitMQ message before starting subprocess.")
-        ch.basic_ack(delivery_tag=method.delivery_tag)
 
         process = subprocess.Popen(
             command,
@@ -471,30 +470,50 @@ def process_message(ch, method, properties, body):
         print("-" * 20)
         # TODO: Clean up local files.
 
+# Redis Client Connection
+def connect_redis():
+    global redis_connection
+    try:
+        redis_connection = redis.from_url(REDIS_URL, decode_responses=True)
+        redis_connection.ping()
+        print(f"Connected to Redis: {REDIS_URL}")
+    except redis.ConnectionError as conn_err:
+        print(f"Failed to connect to Redis: {conn_err}")
+        exit(1)
 
-# Main RabbitMQ Connection and Consumption
-connection = None
+# Redis Lists Worker Loop
+def worker_loop():
+    print("Worker started. Waiting for messages...")
+    while not stop_flag.is_set():
+        try:
+            item = redis_connection.brpop(QUEUE_NAME, timeout=5)
+            if not item:
+                continue
+
+            _, message = item
+            process_message(message)
+
+        except redis.ConnectionError as e:
+            print(f"Redis connection lost: {e}")
+            connect_redis()
+            time.sleep(5)
+            continue
+        except KeyboardInterrupt:
+            print("\nStopping worker...")
+            stop_flag.set()
+            break
+        except Exception as e:
+            print(f"Unexpected error in worker loop: {e}")
+            traceback.print_exc()
+            time.sleep(5)
+
 try:
-    parameters = pika.URLParameters(RABBITMQ_URL)
-    connection = pika.BlockingConnection(parameters)
-    channel = connection.channel()
-    channel.queue_declare(queue=QUEUE_NAME, durable=True)
-    channel.basic_qos(prefetch_count=1)
-    print("Waiting for messages...")
-    channel.basic_consume(queue=QUEUE_NAME, on_message_callback=process_message)
-    channel.start_consuming()
-except pika.exceptions.AMQPConnectionError as conn_err:
-    print(f"Failed to connect to RabbitMQ: {conn_err}")
-    exit(1)
+    connect_redis()
+    worker_loop()
 except KeyboardInterrupt:
-    print("\nStopping worker...")
-    if "channel" in locals() and channel.is_open:
-        channel.stop_consuming()
-    if connection and connection.is_open:
-        connection.close()
-    print("Worker stopped.")
-except Exception as e:
-    print(f"An unexpected error occurred in the main loop: {e}")
-    if connection and connection.is_open:
-        connection.close()
-    exit(1)
+    print("\nCleaning up and exiting...")
+finally:
+    stop_flag.set()
+    if redis_connection:
+        redis_connection.close()
+    print("Worker connection closed.")

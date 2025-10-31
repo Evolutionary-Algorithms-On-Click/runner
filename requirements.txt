@@ -1,11 +1,9 @@
-pika
 minio
 psycopg2
 deap
 numpy
 matplotlib
 scoop
-deap
 scikit-learn
 pillow
 networkx

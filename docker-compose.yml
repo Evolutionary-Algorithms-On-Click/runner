@@ -10,7 +10,6 @@ services:
       MINIO_URL : host.docker.internal:9000
       MINIO_ACCESS_KEY : minioadmin
       MINIO_SECRET_KEY : minioadmin
-      RABBITMQ_URL : amqp://user:password@host.docker.internal:5672/
-      RABBITMQ_QUEUE: task_queue
       WEBSOCKET_LOG_URL: ws://host.docker.internal:5002/live
       REDIS_URL: redis://host.docker.internal:6379/0
+      REDIS_QUEUE_NAME: task_queue
