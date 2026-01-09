@@ -1,5 +1,5 @@
 minio
-psycopg2
+psycopg2-binary
 deap
 numpy
 matplotlib
