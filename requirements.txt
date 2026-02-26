@@ -13,3 +13,4 @@ pygraphviz
 pandas
 redis
 landscapes
+botorch
