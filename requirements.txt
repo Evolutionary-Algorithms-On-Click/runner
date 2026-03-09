@@ -5,8 +5,12 @@ numpy
 matplotlib
 scoop
 scikit-learn
+scikit-optimize
+scipy
 pillow
 networkx
 pygraphviz
 pandas
 redis
+landscapes
+botorch

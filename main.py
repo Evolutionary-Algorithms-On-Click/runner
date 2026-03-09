@@ -10,6 +10,7 @@ import redis
 import traceback
 import time
 
+
 # Read environment variables.
 QUEUE_NAME = os.getenv("REDIS_QUEUE_NAME", "task_queue")
 MINIO_URL = os.getenv("MINIO_URL", "localhost:9000")
@@ -40,16 +41,11 @@ def download_file(run_id, file_name, extension):
     """Downloads a file from MinIO storage."""
     BUCKET_NAME = "code"
     try:
-        minio_client = Minio(
-            MINIO_URL,
-            access_key=MINIO_ACCESS_KEY,
-            secret_key=MINIO_SECRET_KEY,
-            secure=False,
-        )
+        minio_client = Minio(endpoint=MINIO_URL, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
         object_name = f"{run_id}/{file_name}.{extension}"
         download_path = f"code/{run_id}/{file_name}.{extension}"
         os.makedirs(os.path.dirname(download_path), exist_ok=True)
-        minio_client.fget_object(BUCKET_NAME, object_name, download_path)
+        minio_client.fget_object(bucket_name=BUCKET_NAME, object_name=object_name, file_path=download_path)
         print(f"Successfully downloaded {object_name} to {download_path}")
         return os.path.abspath(download_path)
     except S3Error as exc:
@@ -64,16 +60,10 @@ def upload_file(run_id, file_path):
     """Uploads a file to MinIO storage."""
     BUCKET_NAME = "code"
     try:
-        minio_client = Minio(
-            MINIO_URL,
-            access_key=MINIO_ACCESS_KEY,
-            secret_key=MINIO_SECRET_KEY,
-            secure=False,
-        )
-        # Extract filename from the full path.
+        minio_client = Minio(endpoint=MINIO_URL, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
         file_name_with_ext = os.path.basename(file_path)
         object_name = f"{run_id}/{file_name_with_ext}"
-        minio_client.fput_object(BUCKET_NAME, object_name, file_path)
+        minio_client.fput_object(bucket_name=BUCKET_NAME, object_name=object_name, file_path=file_path)
         print(f"Successfully uploaded {file_path} as {object_name}")
     except S3Error as exc:
         print(f"Failed to upload {file_path}: {exc}")
@@ -305,10 +295,11 @@ def process_message(body):
 
         # Execute code.
         command = []
-        if runType == "ml":
+        if runType in ["bo", "ml"]:
             command = ["python", local_file_path]
         else:
             command = ["python", "-m", "scoop", local_file_path]
+
         timeout_sec = 3600
         print(f"Running command: {' '.join(command)} in {file_parent_dir}")
         print(f"Timeout: {timeout_sec} seconds")
